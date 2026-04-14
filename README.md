@@ -29,18 +29,25 @@ special software or drivers are needed on the PC side at all.
 Any ESP32-S3 board with native USB (USB OTG on GPIO19/20). The USB port connected
 to the host must be the native USB port, not UART.
 
-### Requirements
+### Flashing
 
-- [ESP-IDF](https://docs.espressif.com/projects/esp-idf/en/stable/esp32s3/get-started/) v5.x
-- Target: `esp32s3`
+**Easy — no software needed:** use the web installer in Chrome or Edge.
 
-### Build & flash
+👉 **[scalee.github.io/stadia-dongle](https://scalee.github.io/stadia-dongle/)**
+
+Connect the ESP32-S3 via the **COM/UART USB port**, click Install, then move it to the **native USB port** after flashing.
+
+<details>
+<summary>Building and flashing from source</summary>
+
+Requires [ESP-IDF](https://docs.espressif.com/projects/esp-idf/en/stable/esp32s3/get-started/) v6.0 with target `esp32s3`.
 
 ```sh
-cd stadia-dongle
 idf.py build
 idf.py -p <PORT> flash
 ```
+
+</details>
 
 ### Pairing
 
@@ -74,7 +81,6 @@ pattern confirms the state change.
 ### Debug logging
 
 In `bridge.h`, set `DONGLE_DEBUG 1` to enable raw HID report hex dumps over UART.
-Set to `0` for production builds (the `sdkconfig.defaults` silences the log output
-at the IDF level anyway).
+Set to `0` for production builds.
 
 ---

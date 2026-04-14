@@ -197,8 +197,9 @@ static void process_next_chr(void)
         if (g_input_val_handle == 0 || g_output_val_handle == 0 ||
             g_input_cccd_handle == 0) {
             ESP_LOGE(TAG,
-                     "Incomplete handles — in=0x%04x out=0x%04x cccd=0x%04x",
+                     "Incomplete handles — in=0x%04x out=0x%04x cccd=0x%04x — forcing reconnect",
                      g_input_val_handle, g_output_val_handle, g_input_cccd_handle);
+            ble_gap_terminate(g_conn_handle, BLE_ERR_REM_USER_CONN_TERM);
             return;
         }
         subscribe();
@@ -274,21 +275,22 @@ static int report_ref_fn(uint16_t conn_handle, const struct ble_gatt_error *err,
     return 0;
 }
 
-/* Step 5: write 0x0001 to input characteristic CCCD */
+/* Step 5: initiate encryption — CCCD write happens in BLE_GAP_EVENT_ENC_CHANGE */
 static void subscribe(void)
 {
-    ESP_LOGI(TAG, "Subscribing: val=0x%04x cccd=0x%04x out=0x%04x",
+    ESP_LOGI(TAG, "Initiating encryption before CCCD write: val=0x%04x cccd=0x%04x out=0x%04x",
              g_input_val_handle, g_input_cccd_handle, g_output_val_handle);
 
-    // Ensure the link is encrypted — Stadia requires it for HID notifications
+    // Stadia requires an encrypted link before accepting CCCD writes.
+    // The actual write happens in gap_event_fn on BLE_GAP_EVENT_ENC_CHANGE.
     int rc = ble_gap_security_initiate(g_conn_handle);
     if (rc != 0 && rc != BLE_HS_EALREADY) {
         ESP_LOGW(TAG, "Security initiate failed: %d (continuing anyway)", rc);
+        // Link may already be encrypted; attempt CCCD write directly
+        uint8_t val[2] = {0x01, 0x00};
+        ble_gattc_write_flat(g_conn_handle, g_input_cccd_handle,
+                             val, sizeof(val), cccd_write_fn, NULL);
     }
-
-    uint8_t val[2] = {0x01, 0x00};
-    ble_gattc_write_flat(g_conn_handle, g_input_cccd_handle,
-                         val, sizeof(val), cccd_write_fn, NULL);
 }
 
 static int cccd_write_fn(uint16_t conn_handle, const struct ble_gatt_error *err,
@@ -297,7 +299,8 @@ static int cccd_write_fn(uint16_t conn_handle, const struct ble_gatt_error *err,
     if (err->status == 0) {
         ESP_LOGI(TAG, "Notifications enabled — controller ready");
     } else {
-        ESP_LOGE(TAG, "CCCD write failed: %d", err->status);
+        ESP_LOGE(TAG, "CCCD write failed: %d — forcing reconnect", err->status);
+        ble_gap_terminate(conn_handle, BLE_ERR_REM_USER_CONN_TERM);
     }
     return 0;
 }
@@ -360,6 +363,7 @@ static int gap_event_fn(struct ble_gap_event *event, void *arg)
         ESP_LOGW(TAG, "Disconnected (reason=%d), retry in 1 s",
                  event->disconnect.reason);
         g_conn_handle = BLE_HS_CONN_HANDLE_NONE;
+        bridge_send_neutral(); // release all buttons/axes on the USB host side
         esp_timer_start_once(s_reconnect_timer, 1000000 /* 1 s in µs */);
         break;
 
@@ -393,6 +397,12 @@ static int gap_event_fn(struct ble_gap_event *event, void *arg)
 
     case BLE_GAP_EVENT_ENC_CHANGE:
         ESP_LOGI(TAG, "Encryption status: %d", event->enc_change.status);
+        if (event->enc_change.status == 0 && g_input_cccd_handle != 0) {
+            // Link is now encrypted — safe to enable notifications
+            uint8_t val[2] = {0x01, 0x00};
+            ble_gattc_write_flat(event->enc_change.conn_handle, g_input_cccd_handle,
+                                 val, sizeof(val), cccd_write_fn, NULL);
+        }
         break;
 
     default:

@@ -79,8 +79,8 @@ static const uint8_t s_cfg_desc[XBOX_CFG_LEN] = {
     0x02,                               // EP2 OUT address
     0x00, 0x03, 0x00,
 
-    // ----- EP1 IN: Interrupt, 32 bytes, 4 ms (7) -----
-    0x07, 0x05, 0x81, 0x03, 0x20, 0x00, 0x04,
+    // ----- EP1 IN: Interrupt, 32 bytes, 8 ms (7) -----
+    0x07, 0x05, 0x81, 0x03, 0x20, 0x00, 0x08,
 
     // ----- EP2 OUT: Interrupt, 32 bytes, 8 ms (7) -----
     0x07, 0x05, 0x02, 0x03, 0x20, 0x00, 0x08,
@@ -99,19 +99,24 @@ static const char *s_str_desc[] = {
 void usb_xbox_task(void *arg)
 {
     uint8_t report[20];
+    bool have_report = false;
     while (1) {
-        if (xQueueReceive(ble_to_usb_queue, report, pdMS_TO_TICKS(10))) {
+        if (!have_report) {
+            if (!xQueueReceive(ble_to_usb_queue, report, pdMS_TO_TICKS(8))) continue;
             // Drain to latest report — for a gamepad only the newest state matters
             while (xQueueReceive(ble_to_usb_queue, report, 0)) {}
-
-            bool sent = xbox_send_report(report);
+            have_report = true;
+        }
+        if (xbox_send_report(report)) {
             #if DONGLE_DEBUG
-            if (sent) {
-                ESP_LOG_BUFFER_HEX_LEVEL(TAG, report, 20, ESP_LOG_INFO);
-            } else {
-                ESP_LOGW(TAG, "EP busy or disconnected");
-            }
+            ESP_LOG_BUFFER_HEX_LEVEL(TAG, report, 20, ESP_LOG_INFO);
             #endif
+            have_report = false;
+        } else {
+            #if DONGLE_DEBUG
+            ESP_LOGW(TAG, "EP busy or disconnected, retrying");
+            #endif
+            vTaskDelay(pdMS_TO_TICKS(2)); // yield briefly before retry
         }
     }
 }

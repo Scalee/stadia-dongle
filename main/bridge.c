@@ -38,6 +38,12 @@ void bridge_init(void)
     usb_to_ble_queue = xQueueCreate(4, 4);
 }
 
+void bridge_send_neutral(void)
+{
+    uint8_t neutral[20] = {0x00, 0x14, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    xQueueSendToBack(ble_to_usb_queue, neutral, 0);
+}
+
 // Stadia hat-switch (0–7) → Xbox 360 d-pad bitmask (bits 0=Up,1=Down,2=Left,3=Right)
 static const uint8_t dpad_map[8] = {
     0x01, // Up

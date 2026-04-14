@@ -12,4 +12,5 @@ extern QueueHandle_t ble_to_usb_queue;
 extern QueueHandle_t usb_to_ble_queue;
 
 void bridge_init(void);
+void bridge_send_neutral(void);
 void stadia_to_xbox360(const uint8_t *stadia, uint8_t *xbox);
