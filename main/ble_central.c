@@ -26,10 +26,12 @@
 #include "esp_timer.h"
 #include "nimble/nimble_port.h"
 #include "nimble/nimble_port_freertos.h"
+#include "nimble/hci_common.h"
 #include "host/ble_hs.h"
 #include "host/ble_gap.h"
 #include "host/ble_gatt.h"
 #include "host/ble_uuid.h"
+#include "host/ble_store.h"
 #include "os/os_mbuf.h"
 
 #include <string.h>
@@ -288,11 +290,20 @@ static void subscribe(void)
              g_input_val_handle, g_input_cccd_handle, g_output_val_handle);
 
     // Stadia requires an encrypted link before accepting CCCD writes.
-    // The actual write happens in gap_event_fn on BLE_GAP_EVENT_ENC_CHANGE.
+    // Three cases for ble_gap_security_initiate():
+    //   rc == 0            → encryption in progress, write CCCD in BLE_GAP_EVENT_ENC_CHANGE
+    //   rc == BLE_HS_EALREADY → already encrypted (bond restored before discovery finished),
+    //                           ENC_CHANGE already fired so write CCCD now
+    //   rc == other        → unexpected failure, try CCCD anyway
     int rc = ble_gap_security_initiate(g_conn_handle);
-    if (rc != 0 && rc != BLE_HS_EALREADY) {
-        ESP_LOGW(TAG, "Security initiate failed: %d (continuing anyway)", rc);
-        // Link may already be encrypted; attempt CCCD write directly
+    if (rc == 0) {
+        ESP_LOGI(TAG, "Encryption in progress — CCCD write deferred to ENC_CHANGE");
+    } else {
+        if (rc == BLE_HS_EALREADY) {
+            ESP_LOGI(TAG, "Link already encrypted — writing CCCD now");
+        } else {
+            ESP_LOGW(TAG, "Security initiate failed: %d — trying CCCD write anyway", rc);
+        }
         uint8_t val[2] = {0x01, 0x00};
         ble_gattc_write_flat(g_conn_handle, g_input_cccd_handle,
                              val, sizeof(val), cccd_write_fn, NULL);
@@ -333,17 +344,43 @@ static int gap_event_fn(struct ble_gap_event *event, void *arg)
 {
     switch (event->type) {
 
-    case BLE_GAP_EVENT_DISC:
-        if (adv_contains_stadia(event->disc.data, event->disc.length_data)) {
-            ESP_LOGI(TAG, "Stadia found, connecting…");
+    case BLE_GAP_EVENT_DISC: {
+        // Connect if the advertisement contains "Stadia" (name match, used for first
+        // pairing or pairing-mode reconnect), if it is directed advertising, or if it
+        // comes from a previously bonded device — the controller advertises with empty
+        // payload while its stack initialises, so we must not wait for the name.
+        bool is_directed = (event->disc.event_type == BLE_HCI_ADV_RPT_EVTYPE_DIR_IND);
+        bool is_stadia   = adv_contains_stadia(event->disc.data, event->disc.length_data);
+        bool is_bonded   = false;
+        if (!is_stadia && !is_directed) {
+            struct ble_store_key_sec key = { .peer_addr = event->disc.addr, .idx = 0 };
+            struct ble_store_value_sec val;
+            is_bonded = (ble_store_read_peer_sec(&key, &val) == 0);
+        }
+        if (is_stadia || is_directed || is_bonded) {
+            ESP_LOGI(TAG, "Stadia found (%s), connecting…",
+                     is_directed ? "directed adv" : is_bonded ? "bonded addr" : "name match");
             ble_gap_disc_cancel();
+
+            // Request a fast connection interval suitable for a gamepad (~10 ms).
+            static const struct ble_gap_conn_params conn_params = {
+                .scan_itvl      = 16,  // 10 ms
+                .scan_window    = 16,  // 10 ms
+                .itvl_min       = 6,   // 7.5 ms (units of 1.25 ms) — BLE minimum, ~133 Hz
+                .itvl_max       = 6,   // 7.5 ms
+                .latency        = 0,
+                .supervision_timeout = 200, // 2 s
+                .min_ce_len     = 0,
+                .max_ce_len     = 0,
+            };
 
             uint8_t own_addr_type;
             ble_hs_id_infer_auto(0, &own_addr_type);
             ble_gap_connect(own_addr_type, &event->disc.addr,
-                            5000, NULL, gap_event_fn, NULL);
+                            5000, &conn_params, gap_event_fn, NULL);
         }
         break;
+    }
 
     case BLE_GAP_EVENT_CONNECT:
         if (event->connect.status == 0) {
